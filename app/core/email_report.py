@@ -1,4 +1,7 @@
+import json
 import smtplib
+import urllib.error
+import urllib.request
 from email.message import EmailMessage
 from typing import Any
 
@@ -12,7 +15,12 @@ def _parse_recipients(value: str | None) -> list[str]:
     return [x.strip() for x in value.replace(";", ",").split(",") if x.strip()]
 
 
-def _build_report_body(metrics: dict[str, Any], alert_rows: list[dict[str, Any]], total_alerts: int, threshold: int) -> str:
+def _build_report_body(
+    metrics: dict[str, Any],
+    alert_rows: list[dict[str, Any]],
+    total_alerts: int,
+    threshold: int,
+) -> str:
     lines = [
         "Rapport automatique des alertes — Chatbot pré-diagnostique santé",
         "",
@@ -59,30 +67,81 @@ def _build_report_body(metrics: dict[str, Any], alert_rows: list[dict[str, Any]]
     return "\n".join(lines)
 
 
-def send_alert_report_if_needed(force: bool = False) -> dict[str, Any]:
+def _send_with_resend(subject: str, body: str) -> dict[str, Any]:
     settings = get_settings()
-    metrics = db.metrics_summary()
 
-    recent = metrics.get("recent", [])
-    alert_rows = [r for r in recent if r.get("technical_alerts")]
-    total_alerts = sum(len(r.get("technical_alerts") or []) for r in alert_rows)
-    threshold = int(getattr(settings, "alert_report_threshold", 3))
+    recipients = _parse_recipients(settings.resend_recipients)
+    sender = settings.resend_from or "Chatbot Santé <onboarding@resend.dev>"
 
-    if total_alerts <= threshold and not force:
+    missing = []
+
+    if not settings.resend_api_key:
+        missing.append("RESEND_API_KEY")
+    if not recipients:
+        missing.append("RESEND_RECIPIENTS")
+    if not sender:
+        missing.append("RESEND_FROM")
+
+    if missing:
         return {
             "sent": False,
-            "reason": f"Seuil non atteint: {total_alerts} alerte(s) <= {threshold}",
-            "total_alerts": total_alerts,
-            "threshold": threshold,
+            "provider": "resend",
+            "reason": "Configuration Resend incomplète",
+            "missing": missing,
         }
 
-    if not getattr(settings, "gmail_enabled", False):
+    payload = {
+        "from": sender,
+        "to": recipients,
+        "subject": subject,
+        "text": body,
+    }
+
+    request = urllib.request.Request(
+        "https://api.resend.com/emails",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {settings.resend_api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            response_body = response.read().decode("utf-8")
+
+        return {
+            "sent": True,
+            "provider": "resend",
+            "reason": "Rapport envoyé via Resend",
+            "response": response_body,
+            "recipients": recipients,
+        }
+
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8", errors="ignore")
         return {
             "sent": False,
-            "reason": "Gmail désactivé: GMAIL_ENABLED=false",
-            "total_alerts": total_alerts,
-            "threshold": threshold,
+            "provider": "resend",
+            "reason": "Erreur HTTP Resend",
+            "error_type": "HTTPError",
+            "status_code": e.code,
+            "error": error_body,
         }
+
+    except Exception as e:
+        return {
+            "sent": False,
+            "provider": "resend",
+            "reason": "Erreur pendant l'envoi via Resend",
+            "error_type": type(e).__name__,
+            "error": str(e),
+        }
+
+
+def _send_with_gmail_smtp(subject: str, body: str) -> dict[str, Any]:
+    settings = get_settings()
 
     recipients = _parse_recipients(getattr(settings, "gmail_recipients", None))
     sender = getattr(settings, "gmail_sender", None) or getattr(settings, "gmail_user", None)
@@ -105,16 +164,13 @@ def send_alert_report_if_needed(force: bool = False) -> dict[str, Any]:
     if missing:
         return {
             "sent": False,
+            "provider": "gmail_smtp",
             "reason": "Configuration Gmail incomplète",
             "missing": missing,
-            "total_alerts": total_alerts,
-            "threshold": threshold,
         }
 
-    body = _build_report_body(metrics, alert_rows, total_alerts, threshold)
-
     msg = EmailMessage()
-    msg["Subject"] = f"[ALERTE] Chatbot pré-diagnostique santé — {total_alerts} alerte(s)"
+    msg["Subject"] = subject
     msg["From"] = sender
     msg["To"] = ", ".join(recipients)
     msg.set_content(body)
@@ -129,50 +185,57 @@ def send_alert_report_if_needed(force: bool = False) -> dict[str, Any]:
 
         return {
             "sent": True,
+            "provider": "gmail_smtp",
             "reason": "Rapport Gmail envoyé",
-            "total_alerts": total_alerts,
-            "threshold": threshold,
             "recipients": recipients,
-        }
-
-    except smtplib.SMTPAuthenticationError as e:
-        return {
-            "sent": False,
-            "reason": "Erreur authentification Gmail SMTP",
-            "error_type": "SMTPAuthenticationError",
-            "error": str(e),
-            "solution": "Vérifie GMAIL_USER et GMAIL_APP_PASSWORD. Le mot de passe doit être un mot de passe d'application Gmail, sans espaces.",
-            "total_alerts": total_alerts,
-            "threshold": threshold,
-        }
-
-    except smtplib.SMTPConnectError as e:
-        return {
-            "sent": False,
-            "reason": "Impossible de se connecter au serveur SMTP Gmail",
-            "error_type": "SMTPConnectError",
-            "error": str(e),
-            "solution": "Vérifie GMAIL_SMTP_HOST=smtp.gmail.com et GMAIL_SMTP_PORT=587.",
-            "total_alerts": total_alerts,
-            "threshold": threshold,
-        }
-
-    except smtplib.SMTPException as e:
-        return {
-            "sent": False,
-            "reason": "Erreur SMTP Gmail",
-            "error_type": type(e).__name__,
-            "error": str(e),
-            "total_alerts": total_alerts,
-            "threshold": threshold,
         }
 
     except Exception as e:
         return {
             "sent": False,
+            "provider": "gmail_smtp",
             "reason": "Erreur technique pendant l'envoi Gmail",
             "error_type": type(e).__name__,
             "error": str(e),
+        }
+
+
+def send_alert_report_if_needed(force: bool = False) -> dict[str, Any]:
+    settings = get_settings()
+    metrics = db.metrics_summary()
+
+    recent = metrics.get("recent", [])
+    alert_rows = [r for r in recent if r.get("technical_alerts")]
+    total_alerts = sum(len(r.get("technical_alerts") or []) for r in alert_rows)
+    threshold = int(getattr(settings, "alert_report_threshold", 3))
+
+    if total_alerts <= threshold and not force:
+        return {
+            "sent": False,
+            "reason": f"Seuil non atteint: {total_alerts} alerte(s) <= {threshold}",
             "total_alerts": total_alerts,
             "threshold": threshold,
         }
+
+    subject = f"[ALERTE] Chatbot pré-diagnostique santé — {total_alerts} alerte(s)"
+    body = _build_report_body(metrics, alert_rows, total_alerts, threshold)
+
+    provider = (getattr(settings, "email_provider", "smtp") or "smtp").lower().strip()
+
+    if provider == "resend":
+        result = _send_with_resend(subject, body)
+    else:
+        if not getattr(settings, "gmail_enabled", False):
+            return {
+                "sent": False,
+                "provider": "gmail_smtp",
+                "reason": "Gmail désactivé: GMAIL_ENABLED=false",
+                "total_alerts": total_alerts,
+                "threshold": threshold,
+            }
+
+        result = _send_with_gmail_smtp(subject, body)
+
+    result["total_alerts"] = total_alerts
+    result["threshold"] = threshold
+    return result
