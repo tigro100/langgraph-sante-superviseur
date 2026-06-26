@@ -220,7 +220,9 @@ def send_alert_report_if_needed(force: bool = False) -> dict[str, Any]:
     subject = f"[ALERTE] Chatbot pré-diagnostique santé — {total_alerts} alerte(s)"
     body = _build_report_body(metrics, alert_rows, total_alerts, threshold)
 
-    provider = (getattr(settings, "email_provider", "smtp") or "smtp").lower().strip()
+    provider = (
+    getattr(settings, "email_provider", "smtp") or "smtp"
+).lower().strip().strip('"').strip("'")
 
     if provider == "resend":
         result = _send_with_resend(subject, body)
