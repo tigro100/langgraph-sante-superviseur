@@ -22,7 +22,17 @@ class Settings(BaseSettings):
     latency_threshold_ms: int = 8000
     cost_threshold_usd: float = 0.02
 
-    app_name: str = 'LangGraph Santé Supervisé'
+    app_name: str = 'Chatbot pré-diagnostique santé'
+
+    alert_report_threshold: int = 3
+    alert_report_cooldown_minutes: int = 60
+    gmail_enabled: bool = False
+    gmail_smtp_host: str = 'smtp.gmail.com'
+    gmail_smtp_port: int = 587
+    gmail_user: str | None = None
+    gmail_app_password: str | None = None
+    gmail_sender: str | None = None
+    gmail_recipients: str | None = None
 
     @property
     def db_file(self) -> Path:

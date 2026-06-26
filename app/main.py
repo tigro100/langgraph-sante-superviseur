@@ -2,10 +2,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 
 from app.core import db
+from app.core.email_report import send_alert_report_if_needed
 from app.core.graph import run_medical_graph
 from app.core.schemas import ChatRequest, ChatResponse, FeedbackRequest
 
-app = FastAPI(title='LangGraph Santé Supervisé', version='1.0.0')
+app = FastAPI(title='Chatbot pré-diagnostique santé', version='1.0.0')
 
 
 @app.on_event('startup')
@@ -35,6 +36,16 @@ def metrics() -> dict:
     return db.metrics_summary()
 
 
+@app.post('/api/alert-report/check-send')
+def alert_report_check_send(force: bool = False) -> dict:
+    return send_alert_report_if_needed(force=force)
+
+
+@app.get('/api/schedules')
+def schedules() -> list[dict]:
+    return []
+
+
 @app.get('/api/runs/{correlation_id}')
 def run_detail(correlation_id: str) -> dict:
     result = db.get_execution(correlation_id)
@@ -57,7 +68,7 @@ def chat_ui() -> str:
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Chatbot santé LangGraph</title>
+  <title>Chatbot pré-diagnostique santé</title>
   <style>
     :root { --blue:#07314a; --yellow:#f7b500; --bg:#f4f7fb; --card:#fff; --muted:#667085; }
     body { font-family: Arial, sans-serif; margin:0; background:var(--bg); color:#101828; }
@@ -82,7 +93,7 @@ def chat_ui() -> str:
 </head>
 <body>
 <header>
-  <div><strong>LangGraph Santé Supervisé</strong><div class="muted" style="color:#d0d5dd">Chat + agent de supervision technique + KPI</div></div>
+  <div><strong>Chatbot pré-diagnostique santé</strong></div>
   <nav><a href="/dashboard">Dashboard</a><a href="/docs">API Docs</a></nav>
 </header>
 <main>
@@ -126,9 +137,9 @@ async function sendMessage(){
   const payload = {message, session_id: document.getElementById('session').value || null, review_mode: document.getElementById('reviewMode').value, human_review: document.getElementById('humanReview').value || null};
   const res = await fetch('/api/chat', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
   const data = await res.json();
-  document.querySelector('#messages .bot:last-child').textContent = data.answer;
+  document.querySelector('#messages .bot:last-child').textContent = data.answer || JSON.stringify(data, null, 2);
   sessionId = data.session_id; localStorage.setItem('sessionId', sessionId); document.getElementById('session').value=sessionId;
-  document.getElementById('lastKpi').innerHTML = `<div><strong>${data.correlation_id.substring(0,8)}</strong><br><span class="muted">Correlation ID</span></div><div><strong>${data.latency_ms} ms</strong><br><span class="muted">Latence</span></div><div><strong>${data.token_input + data.token_output}</strong><br><span class="muted">Tokens</span></div><div><strong>$${data.cost_usd.toFixed(6)}</strong><br><span class="muted">Coût</span></div>`;
+  document.getElementById('lastKpi').innerHTML = `<div><strong>${(data.correlation_id || '-').substring(0,8)}</strong><br><span class="muted">Correlation ID</span></div><div><strong>${data.latency_ms || 0} ms</strong><br><span class="muted">Latence</span></div><div><strong>${(data.token_input || 0) + (data.token_output || 0)}</strong><br><span class="muted">Tokens</span></div><div><strong>$${Number(data.cost_usd || 0).toFixed(6)}</strong><br><span class="muted">Coût</span></div>`;
   let alerts = [];
   if(data.human_review_required) alerts.push('Validation humaine requise avant sortie patient.');
   if(data.hallucination_risk) alerts.push('Risque hallucination détecté par guardrail.');
@@ -151,46 +162,116 @@ def dashboard_ui() -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Dashboard observabilité</title>
   <style>
-    :root { --blue:#07314a; --yellow:#f7b500; --bg:#f4f7fb; --card:#fff; --muted:#667085; }
+    :root { --blue:#07314a; --yellow:#f7b500; --bg:#f4f7fb; --card:#fff; --muted:#667085; --red:#b42318; --green:#067647; }
     body { font-family: Arial, sans-serif; margin:0; background:var(--bg); color:#101828; }
     header { background:var(--blue); color:white; padding:22px 34px; display:flex; justify-content:space-between; align-items:center; }
-    header a { color:var(--yellow); text-decoration:none; margin-left:18px; font-weight:bold; }
-    main { max-width:1200px; margin:28px auto; padding:0 18px; }
+    header a { color:var(--yellow); text-decoration:none; margin-left:18px; font-weight:bold; font-size:20px; }
+    main { max-width:1280px; margin:28px auto; padding:0 18px; }
     .grid { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; }
-    .card { background:var(--card); border-radius:16px; padding:18px; box-shadow:0 8px 24px rgba(16,24,40,.08); margin-bottom:18px; }
-    .kpi strong { font-size:26px; color:var(--blue); }
+    .card { background:var(--card); border-radius:18px; padding:22px; box-shadow:0 8px 24px rgba(16,24,40,.08); margin-bottom:18px; }
+    .kpi strong { font-size:28px; color:var(--blue); }
     .muted { color:var(--muted); font-size:13px; }
-    .bar { display:flex; align-items:center; gap:10px; margin:8px 0; }
-    .bar span:first-child { width:150px; }
-    .fill { height:20px; background:var(--yellow); border-radius:10px; min-width:2px; }
-    table { width:100%; border-collapse:collapse; font-size:14px; }
-    th,td { text-align:left; border-bottom:1px solid #eaecf0; padding:10px; vertical-align:top; }
-    code { background:#f2f4f7; border-radius:6px; padding:2px 6px; }
-    .alert { color:#b42318; font-weight:bold; }
-    @media (max-width:900px){ .grid{grid-template-columns:1fr 1fr;} }
+    .bar { display:grid; grid-template-columns:170px 1fr 50px; align-items:center; gap:12px; margin:10px 0; font-size:18px; }
+    .bar-bg { height:24px; background:#eef2f7; border-radius:999px; overflow:hidden; }
+    .fill { height:100%; background:var(--yellow); border-radius:999px; min-width:2px; }
+    table { width:100%; border-collapse:collapse; font-size:15px; }
+    th,td { text-align:left; border-bottom:1px solid #eaecf0; padding:12px 10px; vertical-align:top; }
+    th { font-size:17px; }
+    code { background:#f2f4f7; border-radius:6px; padding:3px 7px; font-weight:bold; }
+    button { background:var(--yellow); color:#111827; border:none; padding:10px 14px; border-radius:10px; font-weight:bold; cursor:pointer; }
+    .alert { color:var(--red); font-weight:bold; }
+    .ok { color:var(--green); font-weight:bold; }
+    .warnbox { background:#fff7e6; border:1px solid var(--yellow); }
+    @media (max-width:1000px){ .grid{grid-template-columns:1fr 1fr;} }
+    @media (max-width:700px){ .grid{grid-template-columns:1fr;} .bar{grid-template-columns:1fr;} }
   </style>
 </head>
 <body>
-<header><div><strong>Dashboard observabilité</strong><div class="muted" style="color:#d0d5dd">Correlation ID, tokens, coût, erreurs, hallucination, latence</div></div><nav><a href="/">Chat</a><a href="/docs">API Docs</a></nav></header>
+<header>
+  <div><strong>Dashboard observabilité</strong><div class="muted" style="color:#d0d5dd">Correlation ID, tokens, coût, erreurs, hallucination, latence</div></div>
+  <nav><a href="/">Chat</a><a href="/docs">API Docs</a></nav>
+</header>
 <main>
   <div class="grid" id="kpis"></div>
   <div class="card"><h3>Répartition par agent</h3><div id="agentBars"></div></div>
   <div class="card"><h3>Répartition par niveau de risque</h3><div id="riskBars"></div></div>
+  <div class="card warnbox" id="gmailReport" style="display:none"></div>
   <div class="card"><h3>Dernières exécutions</h3><div id="table"></div></div>
 </main>
 <script>
-function bars(obj){ const max=Math.max(1,...Object.values(obj)); return Object.entries(obj).map(([k,v])=>`<div class="bar"><span>${k}</span><div class="fill" style="width:${(v/max)*70}%"></div><strong>${v}</strong></div>`).join(''); }
-async function load(){
- const res=await fetch('/api/metrics'); const m=await res.json();
- document.getElementById('kpis').innerHTML = [
-  ['Runs',m.total_runs], ['Succès',m.success_runs], ['Erreurs',m.error_runs], ['Latence moy.',m.avg_latency_ms+' ms'],
-  ['Coût total','$'+Number(m.total_cost_usd).toFixed(6)], ['Tokens',m.total_tokens], ['Risque hallucination',m.hallucination_risk_count], ['HITL requis',m.human_review_required_count]
- ].map(x=>`<div class="card kpi"><strong>${x[1]}</strong><br><span class="muted">${x[0]}</span></div>`).join('');
- document.getElementById('agentBars').innerHTML = bars(m.by_agent || {});
- document.getElementById('riskBars').innerHTML = bars(m.by_risk || {});
- document.getElementById('table').innerHTML = `<table><thead><tr><th>Date</th><th>Correlation</th><th>Agent/Risque</th><th>KPI</th><th>Alertes</th></tr></thead><tbody>${(m.recent||[]).map(r=>`<tr><td>${r.created_at}</td><td><code>${r.correlation_id.substring(0,8)}</code></td><td>${r.selected_agent||'-'}<br>${r.risk_level||'-'}</td><td>${r.latency_ms} ms<br>${(r.token_input||0)+(r.token_output||0)} tokens<br>$${Number(r.cost_usd||0).toFixed(6)}</td><td class="${(r.technical_alerts||[]).length?'alert':''}">${(r.technical_alerts||[]).join('<br>') || '-'}</td></tr>`).join('')}</tbody></table>`;
+function safe(v){ return (v === null || v === undefined || v === '') ? '-' : String(v); }
+function money(v){ return '$' + Number(v || 0).toFixed(6); }
+function htmlEscape(value){ return safe(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c])); }
+function bars(obj){
+  const entries = Object.entries(obj || {});
+  if(!entries.length) return '<p class="muted">Aucune donnée disponible.</p>';
+  const max = Math.max(1, ...entries.map(([k,v]) => Number(v || 0)));
+  return entries.map(([k,v]) => `<div class="bar"><span>${htmlEscape(k)}</span><div class="bar-bg"><div class="fill" style="width:${Math.max(4, (Number(v || 0)/max)*100)}%"></div></div><strong>${v}</strong></div>`).join('');
 }
-load(); setInterval(load, 5000);
+function renderTable(rows){
+  if(!rows || !rows.length) return '<p class="muted">Aucune exécution disponible.</p>';
+  return `<table><thead><tr><th>Date</th><th>Correlation ID</th><th>Agent/Risque</th><th>KPI</th><th>Alertes</th></tr></thead><tbody>${rows.map(r => {
+    const alerts = Array.isArray(r.technical_alerts) ? r.technical_alerts : [];
+    const totalTokens = Number(r.token_input || 0) + Number(r.token_output || 0);
+    return `<tr><td>${htmlEscape(r.created_at)}</td><td><code title="${htmlEscape(r.correlation_id)}">${htmlEscape(safe(r.correlation_id).substring(0,8))}</code></td><td><strong>${htmlEscape(r.selected_agent)}</strong><br>${htmlEscape(r.risk_level)}</td><td>${Number(r.latency_ms || 0)} ms<br>${totalTokens} tokens<br>${money(r.cost_usd)}</td><td>${alerts.length ? alerts.map(a => `<div class="alert">${htmlEscape(a)}</div>`).join('') : '-'}</td></tr>`;
+  }).join('')}</tbody></table>`;
+}
+async function manualReport(){
+  const box = document.getElementById('gmailReport');
+  box.style.display = 'block';
+  box.innerHTML = '<h3>Rapport Gmail</h3><p>Envoi en cours...</p>';
+  try {
+    const repRes = await fetch('/api/alert-report/check-send?force=true', {method:'POST'});
+    const rep = await repRes.json();
+    box.innerHTML = `<h3>Rapport Gmail</h3><p><strong>${rep.sent ? 'Envoyé' : 'Non envoyé'}</strong> — ${htmlEscape(rep.reason)}</p><p class="muted">Alertes dashboard: ${safe(rep.total_alerts)} / seuil: ${safe(rep.threshold)}</p><button onclick="manualReport()">Tester l'envoi Gmail</button>`;
+  } catch(e) {
+    box.innerHTML = `<h3>Rapport Gmail</h3><p class="alert">Erreur lors de la tentative d'envoi du rapport.</p><button onclick="manualReport()">Réessayer</button>`;
+  }
+}
+async function checkAutoGmail(m){
+  const box = document.getElementById('gmailReport');
+  const totalAlerts = Number(m.total_alerts || 0);
+  if(totalAlerts <= 3){
+    box.style.display = 'block';
+    box.innerHTML = `<h3>Rapport Gmail</h3><p class="muted">Envoi automatique à partir de plus de 3 alertes. Alertes actuelles : ${totalAlerts}</p><button onclick="manualReport()">Tester l'envoi Gmail</button>`;
+    return;
+  }
+  try {
+    const repRes = await fetch('/api/alert-report/check-send', {method:'POST'});
+    const rep = await repRes.json();
+    box.style.display = 'block';
+    box.innerHTML = `<h3>Rapport Gmail</h3><p><strong>${rep.sent ? 'Envoyé' : 'Non envoyé'}</strong> — ${htmlEscape(rep.reason)}</p><p class="muted">Alertes dashboard: ${safe(rep.total_alerts)} / seuil: ${safe(rep.threshold)}</p><button onclick="manualReport()">Tester l'envoi Gmail</button>`;
+  } catch(e) {
+    box.style.display = 'block';
+    box.innerHTML = `<h3>Rapport Gmail</h3><p class="alert">Erreur lors de la tentative d'envoi du rapport.</p><button onclick="manualReport()">Tester l'envoi Gmail</button>`;
+  }
+}
+async function load(){
+  try {
+    const res = await fetch('/api/metrics', {cache:'no-store'});
+    if(!res.ok) throw new Error('/api/metrics HTTP ' + res.status);
+    const m = await res.json();
+    document.getElementById('kpis').innerHTML = [
+      ['Exécutions', m.total_runs],
+      ['Succès', m.success_runs],
+      ['Erreurs', m.error_runs],
+      ['Latence moy.', (m.avg_latency_ms || 0) + ' ms'],
+      ['Coût total', money(m.total_cost_usd)],
+      ['Tokens', m.total_tokens],
+      ['Alertes', m.total_alerts || 0],
+      ['Risque hallucination', m.hallucination_risk_count],
+      ['HITL requis', m.human_review_required_count]
+    ].map(x => `<div class="card kpi"><strong>${safe(x[1])}</strong><br><span class="muted">${htmlEscape(x[0])}</span></div>`).join('');
+    document.getElementById('agentBars').innerHTML = bars(m.by_agent || {});
+    document.getElementById('riskBars').innerHTML = bars(m.by_risk || {});
+    document.getElementById('table').innerHTML = renderTable(m.recent || []);
+    await checkAutoGmail(m);
+  } catch(e) {
+    document.getElementById('table').innerHTML = `<p class="alert">Erreur dashboard : ${htmlEscape(e.message)}</p>`;
+  }
+}
+load();
+setInterval(load, 5000);
 </script>
 </body>
 </html>

@@ -180,20 +180,24 @@ def metrics_summary(limit: int = 500) -> dict[str, Any]:
             'total_tokens': 0,
             'hallucination_risk_count': 0,
             'human_review_required_count': 0,
+            'total_alerts': 0,
             'by_agent': {},
             'by_risk': {},
             'recent': [],
         }
-    success = sum(1 for r in rows if r['status'] == 'SUCCESS')
-    errors = sum(1 for r in rows if r['error_count'] > 0 or r['status'] == 'ERROR')
-    total_latency = sum(int(r['latency_ms'] or 0) for r in rows)
-    total_cost = sum(float(r['cost_usd'] or 0) for r in rows)
-    total_tokens = sum(int(r['token_input'] or 0) + int(r['token_output'] or 0) for r in rows)
+    success = sum(1 for r in rows if r.get('status') == 'SUCCESS')
+    errors = sum(1 for r in rows if int(r.get('error_count') or 0) > 0 or r.get('status') == 'ERROR')
+    total_latency = sum(int(r.get('latency_ms') or 0) for r in rows)
+    total_cost = sum(float(r.get('cost_usd') or 0) for r in rows)
+    total_tokens = sum(int(r.get('token_input') or 0) + int(r.get('token_output') or 0) for r in rows)
+    total_alerts = sum(len(r.get('technical_alerts') or []) for r in rows)
     by_agent: dict[str, int] = {}
     by_risk: dict[str, int] = {}
     for r in rows:
-        by_agent[r.get('selected_agent') or 'UNKNOWN'] = by_agent.get(r.get('selected_agent') or 'UNKNOWN', 0) + 1
-        by_risk[r.get('risk_level') or 'UNKNOWN'] = by_risk.get(r.get('risk_level') or 'UNKNOWN', 0) + 1
+        agent = r.get('selected_agent') or 'UNKNOWN'
+        risk = r.get('risk_level') or 'UNKNOWN'
+        by_agent[agent] = by_agent.get(agent, 0) + 1
+        by_risk[risk] = by_risk.get(risk, 0) + 1
     return {
         'total_runs': total,
         'success_runs': success,
@@ -202,8 +206,9 @@ def metrics_summary(limit: int = 500) -> dict[str, Any]:
         'total_cost_usd': round(total_cost, 6),
         'avg_cost_usd': round(total_cost / total, 6),
         'total_tokens': total_tokens,
-        'hallucination_risk_count': sum(1 for r in rows if r['hallucination_risk']),
-        'human_review_required_count': sum(1 for r in rows if r['human_review_required']),
+        'hallucination_risk_count': sum(1 for r in rows if r.get('hallucination_risk')),
+        'human_review_required_count': sum(1 for r in rows if r.get('human_review_required')),
+        'total_alerts': total_alerts,
         'by_agent': by_agent,
         'by_risk': by_risk,
         'recent': rows[:25],
