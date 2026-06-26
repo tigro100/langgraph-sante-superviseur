@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     # Provider d'envoi email :
     # - "smtp"   = Gmail SMTP
     # - "resend" = API HTTPS Resend, recommandé pour Railway
-    email_provider: str = "smtp"
+    email_provider: str = "resend"
 
     # =========================
     # Gmail SMTP

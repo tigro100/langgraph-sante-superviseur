@@ -221,8 +221,14 @@ def send_alert_report_if_needed(force: bool = False) -> dict[str, Any]:
     body = _build_report_body(metrics, alert_rows, total_alerts, threshold)
 
     provider = (
-    getattr(settings, "email_provider", "smtp") or "smtp"
-).lower().strip().strip('"').strip("'")
+        getattr(settings, "email_provider", "smtp") or "smtp"
+    ).lower().strip().strip('"').strip("'")
+
+    # Sécurité Railway :
+    # Si RESEND_API_KEY existe, on force Resend.
+    # Cela évite que Railway retombe sur Gmail SMTP.
+    if getattr(settings, "resend_api_key", None):
+        provider = "resend"
 
     if provider == "resend":
         result = _send_with_resend(subject, body)
@@ -240,4 +246,5 @@ def send_alert_report_if_needed(force: bool = False) -> dict[str, Any]:
 
     result["total_alerts"] = total_alerts
     result["threshold"] = threshold
+    result["effective_provider"] = provider
     return result
